@@ -12,7 +12,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Options
 option(DRIP_BUILD_EXAMPLES "Build example programs" OFF)
 option(DRIP_BUILD_TESTS "Build tests" OFF)
-option(DRIP_VENDORED_JSON "Use vendored nlohmann/json instead of FetchContent" OFF)
 
 # =============================================================================
 # Dependencies
@@ -21,22 +20,11 @@ option(DRIP_VENDORED_JSON "Use vendored nlohmann/json instead of FetchContent" O
 # libcurl - required for HTTP
 find_package(CURL REQUIRED)
 
-# nlohmann/json - header-only JSON library
-if(DRIP_VENDORED_JSON)
-    add_library(nlohmann_json INTERFACE)
-    target_include_directories(nlohmann_json INTERFACE
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party
-    )
-else()
-    include(FetchContent)
-    FetchContent_Declare(
-        nlohmann_json
-        GIT_REPOSITORY https://github.com/nlohmann/json.git
-        GIT_TAG        v3.11.3
-        GIT_SHALLOW    TRUE
-    )
-    FetchContent_MakeAvailable(nlohmann_json)
-endif()
+# picojson - vendored header-only JSON library (C++03 compatible)
+add_library(picojson INTERFACE)
+target_include_directories(picojson INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+)
 
 # =============================================================================
 # Library
@@ -56,7 +44,7 @@ target_include_directories(drip_sdk
 
 target_link_libraries(drip_sdk
     PRIVATE
-        nlohmann_json::nlohmann_json
+        picojson
         CURL::libcurl
 )
 
