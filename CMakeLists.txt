@@ -1,6 +1,6 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.14)
 
-project(drip-sdk-cpp03
+project(drip-sdk-cpp
     VERSION 0.1.0
     LANGUAGES CXX
 )
@@ -42,26 +42,26 @@ endif()
 # Library
 # =============================================================================
 
-add_library(drip_sdk03
+add_library(drip_sdk
     src/client.cpp
 )
 
-add_library(drip::sdk03 ALIAS drip_sdk03)
+add_library(drip::sdk ALIAS drip_sdk)
 
-target_include_directories(drip_sdk03
+target_include_directories(drip_sdk
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(drip_sdk03
+target_link_libraries(drip_sdk
     PRIVATE
         nlohmann_json::nlohmann_json
         CURL::libcurl
 )
 
-set_target_properties(drip_sdk03 PROPERTIES
-    OUTPUT_NAME "drip03"
+set_target_properties(drip_sdk PROPERTIES
+    OUTPUT_NAME "drip"
     VERSION ${PROJECT_VERSION}
     SOVERSION 0
 )
@@ -71,8 +71,8 @@ set_target_properties(drip_sdk03 PROPERTIES
 # =============================================================================
 
 if(DRIP_BUILD_EXAMPLES)
-    add_executable(drip03_demo examples/demo.cpp)
-    target_link_libraries(drip03_demo PRIVATE drip_sdk03)
+    add_executable(drip_demo examples/demo.cpp)
+    target_link_libraries(drip_demo PRIVATE drip_sdk)
 endif()
 
 # =============================================================================
@@ -81,9 +81,9 @@ endif()
 
 if(DRIP_BUILD_TESTS)
     enable_testing()
-    add_executable(drip03_tests tests/test_client.cpp)
-    target_link_libraries(drip03_tests PRIVATE drip_sdk03)
-    add_test(NAME drip03_sdk_tests COMMAND drip03_tests)
+    add_executable(drip_tests tests/test_client.cpp)
+    target_link_libraries(drip_tests PRIVATE drip_sdk)
+    add_test(NAME drip_sdk_tests COMMAND drip_tests)
 endif()
 
 # =============================================================================
@@ -93,7 +93,7 @@ endif()
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     include(GNUInstallDirs)
 
-    install(TARGETS drip_sdk03
+    install(TARGETS drip_sdk
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
