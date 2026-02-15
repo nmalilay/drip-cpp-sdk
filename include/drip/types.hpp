@@ -4,7 +4,9 @@
 #include <string>
 #include <vector>
 #include <map>
-#include <cstdint>
+
+/* C++03: use <stdint.h> instead of <cstdint> */
+#include <stdint.h>
 
 namespace drip {
 
@@ -15,10 +17,10 @@ namespace drip {
 /**
  * Configuration for the Drip SDK client.
  *
- * api_key:  Your Drip API key (sk_live_... or pk_live_...).
- *           Falls back to DRIP_API_KEY environment variable.
- * base_url: API base URL. Defaults to production.
- *           Falls back to DRIP_BASE_URL environment variable.
+ * api_key:    Your Drip API key (sk_live_... or pk_live_...).
+ *             Falls back to DRIP_API_KEY environment variable.
+ * base_url:   API base URL. Defaults to production.
+ *             Falls back to DRIP_BASE_URL environment variable.
  * timeout_ms: Request timeout in milliseconds. Default: 30000.
  */
 struct Config {
@@ -73,6 +75,10 @@ struct CustomerResult {
     Metadata metadata;
     std::string created_at;
     std::string updated_at;
+
+    CustomerResult()
+        : is_internal(false)
+    {}
 };
 
 struct ListCustomersOptions {
@@ -85,6 +91,8 @@ struct ListCustomersOptions {
 struct ListCustomersResult {
     std::vector<CustomerResult> customers;
     int total;
+
+    ListCustomersResult() : total(0) {}
 };
 
 struct BalanceResult {
@@ -101,6 +109,12 @@ struct PingResult {
     std::string status;
     int latency_ms;
     int64_t timestamp;
+
+    PingResult()
+        : ok(false)
+        , latency_ms(0)
+        , timestamp(0)
+    {}
 };
 
 // =============================================================================
@@ -115,6 +129,10 @@ struct TrackUsageParams {
     std::string units;           // Optional (e.g., "tokens", "requests")
     std::string description;     // Optional
     Metadata metadata;           // Optional
+
+    TrackUsageParams()
+        : quantity(0)
+    {}
 };
 
 struct TrackUsageResult {
@@ -125,6 +143,12 @@ struct TrackUsageResult {
     double quantity;
     bool is_internal;
     std::string message;
+
+    TrackUsageResult()
+        : success(false)
+        , quantity(0)
+        , is_internal(false)
+    {}
 };
 
 // =============================================================================
@@ -182,6 +206,10 @@ struct RunResult {
     RunStatus status;
     std::string correlation_id;
     std::string created_at;
+
+    RunResult()
+        : status(RUN_PENDING)
+    {}
 };
 
 struct EndRunParams {
@@ -189,6 +217,10 @@ struct EndRunParams {
     std::string error_message;   // Optional
     std::string error_code;      // Optional
     Metadata metadata;           // Optional
+
+    EndRunParams()
+        : status(RUN_COMPLETED)
+    {}
 };
 
 struct EndRunResult {
@@ -198,6 +230,12 @@ struct EndRunResult {
     int duration_ms;
     int event_count;
     std::string total_cost_units;
+
+    EndRunResult()
+        : status(RUN_COMPLETED)
+        , duration_ms(0)
+        , event_count(0)
+    {}
 };
 
 // =============================================================================
@@ -228,6 +266,12 @@ struct EventResult {
     double cost_units;
     bool is_duplicate;
     std::string timestamp;
+
+    EventResult()
+        : quantity(0)
+        , cost_units(0)
+        , is_duplicate(false)
+    {}
 };
 
 // =============================================================================
@@ -271,11 +315,21 @@ struct RecordRunResult {
         std::string workflow_name;
         RunStatus status;
         int duration_ms;
+
+        Run()
+            : status(RUN_COMPLETED)
+            , duration_ms(0)
+        {}
     } run;
 
     struct Events {
         int created;
         int duplicates;
+
+        Events()
+            : created(0)
+            , duplicates(0)
+        {}
     } events;
 
     std::string total_cost_units;

@@ -5,12 +5,11 @@
 #include "errors.hpp"
 
 #include <string>
-#include <memory>
 
 namespace drip {
 
 /**
- * Drip SDK Client - C++ interface for Drip's REST API.
+ * Drip SDK Client - C++03 compatible interface for Drip's REST API.
  *
  * Core methods:
  *   - ping()        - Health check and latency measurement
@@ -25,12 +24,11 @@ namespace drip {
  *   cfg.api_key = "sk_live_abc123";
  *   drip::Client client(cfg);
  *
- *   auto health = client.ping();
+ *   drip::PingResult health = client.ping();
  *   if (health.ok) {
- *       // Create a customer first
  *       drip::CreateCustomerParams cparams;
  *       cparams.external_customer_id = "user_123";
- *       auto customer = client.createCustomer(cparams);
+ *       drip::CustomerResult customer = client.createCustomer(cparams);
  *
  *       drip::TrackUsageParams params;
  *       params.customer_id = customer.id;
@@ -53,12 +51,6 @@ public:
     explicit Client(const Config& config = Config());
 
     ~Client();
-
-    // Non-copyable, movable
-    Client(const Client&) = delete;
-    Client& operator=(const Client&) = delete;
-    Client(Client&& other);
-    Client& operator=(Client&& other);
 
     /** The detected key type (secret, public, unknown). */
     KeyType key_type() const;
@@ -149,7 +141,7 @@ public:
      *
      * Example:
      *   RecordRunParams params;
-     *   params.customer_id = customer.id;  // from createCustomer()
+     *   params.customer_id = customer.id;
      *   params.workflow = "training-run";
      *   params.status = RUN_COMPLETED;
      *
@@ -159,13 +151,17 @@ public:
      *   e1.units = "epochs";
      *   params.events.push_back(e1);
      *
-     *   auto result = client.recordRun(params);
+     *   RecordRunResult result = client.recordRun(params);
      */
     RecordRunResult recordRun(const RecordRunParams& params);
 
 private:
+    /* C++03: non-copyable via private declarations (no = delete) */
+    Client(const Client&);
+    Client& operator=(const Client&);
+
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    Impl* impl_;  /* C++03: raw pointer instead of unique_ptr */
 };
 
 } // namespace drip

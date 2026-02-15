@@ -1,17 +1,26 @@
 #include "drip/client.hpp"
 
-#include <nlohmann/json.hpp>
+#include <picojson/picojson.h>
 #include <curl/curl.h>
 
 #include <sstream>
 #include <cstdlib>
 #include <ctime>
-#include <chrono>
-#include <functional>
+#include <cstring>
 
-using json = nlohmann::json;
+/* C++03: use sys/time.h for gettimeofday instead of std::chrono */
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/time.h>
+#endif
 
 namespace drip {
+
+/* Convenience typedefs for picojson */
+typedef picojson::value  JsonVal;
+typedef picojson::object JsonObj;
+typedef picojson::array  JsonArr;
 
 // =============================================================================
 // Helpers
@@ -20,8 +29,23 @@ namespace drip {
 static const char* DEFAULT_BASE_URL = "https://drip-app-hlunj.ondigitalocean.app/v1";
 
 /**
+ * Get current time in milliseconds (C++03 compatible).
+ */
+static long long now_ms() {
+#ifdef _WIN32
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    long long t = (long long)ft.dwHighDateTime << 32 | ft.dwLowDateTime;
+    return t / 10000LL - 11644473600000LL;
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (long long)tv.tv_sec * 1000LL + (long long)tv.tv_usec / 1000LL;
+#endif
+}
+
+/**
  * Generate a deterministic idempotency key from components.
- * Uses a simple hash-based approach (not cryptographic - just dedup).
  */
 static std::string make_idempotency_key(
     const std::string& prefix,
@@ -32,7 +56,6 @@ static std::string make_idempotency_key(
     std::ostringstream oss;
     oss << prefix << ":" << a << ":" << b << ":" << c;
 
-    // Simple djb2 hash
     std::string input = oss.str();
     unsigned long hash = 5381;
     for (size_t i = 0; i < input.size(); ++i) {
@@ -54,7 +77,7 @@ static std::string make_idempotency_key_int(
 }
 
 /**
- * Get environment variable or empty string.
+ * Get environment variable or fallback.
  */
 static std::string env_or(const char* name, const std::string& fallback) {
     const char* val = std::getenv(name);
@@ -64,63 +87,95 @@ static std::string env_or(const char* name, const std::string& fallback) {
     return fallback;
 }
 
-/**
- * Convert Metadata map to JSON object.
- */
-static json metadata_to_json(const Metadata& m) {
-    json obj = json::object();
-    for (Metadata::const_iterator it = m.begin(); it != m.end(); ++it) {
-        obj[it->first] = it->second;
-    }
-    return obj;
+// =============================================================================
+// picojson helpers — build & read JSON safely
+// =============================================================================
+
+/** Create a JSON string value. */
+static JsonVal jstr(const std::string& s) {
+    return JsonVal(s);
 }
 
-/**
- * Parse Metadata from JSON object.
- */
-static Metadata metadata_from_json(const json& j) {
+/** Create a JSON number value. */
+static JsonVal jnum(double n) {
+    return JsonVal(n);
+}
+
+/** Create a JSON bool value. */
+static JsonVal jbool(bool b) {
+    return JsonVal(b);
+}
+
+/** Convert Metadata map to a JSON object value. */
+static JsonVal metadata_to_json(const Metadata& m) {
+    JsonObj obj;
+    for (Metadata::const_iterator it = m.begin(); it != m.end(); ++it) {
+        obj[it->first] = jstr(it->second);
+    }
+    return JsonVal(obj);
+}
+
+/** Parse Metadata from a JSON object value. */
+static Metadata metadata_from_json(const JsonVal& v) {
     Metadata m;
-    if (j.is_object()) {
-        for (json::const_iterator it = j.begin(); it != j.end(); ++it) {
-            if (it.value().is_string()) {
-                m[it.key()] = it.value().get<std::string>();
+    if (v.is<JsonObj>()) {
+        const JsonObj& obj = v.get<JsonObj>();
+        for (JsonObj::const_iterator it = obj.begin(); it != obj.end(); ++it) {
+            if (it->second.is<std::string>()) {
+                m[it->first] = it->second.get<std::string>();
             } else {
-                m[it.key()] = it.value().dump();
+                m[it->first] = it->second.serialize();
             }
         }
     }
     return m;
 }
 
-/**
- * Safely get a string from JSON, returning empty string if missing/null.
- */
-static std::string json_string(const json& j, const char* key) {
-    if (j.contains(key) && j[key].is_string()) {
-        return j[key].get<std::string>();
+/** Safely get a string from a JSON object. */
+static std::string json_string(const JsonObj& obj, const char* key) {
+    JsonObj::const_iterator it = obj.find(key);
+    if (it != obj.end() && it->second.is<std::string>()) {
+        return it->second.get<std::string>();
     }
     return "";
 }
 
-static int json_int(const json& j, const char* key, int def = 0) {
-    if (j.contains(key) && j[key].is_number()) {
-        return j[key].get<int>();
+static int json_int(const JsonObj& obj, const char* key, int def = 0) {
+    JsonObj::const_iterator it = obj.find(key);
+    if (it != obj.end() && it->second.is<double>()) {
+        return static_cast<int>(it->second.get<double>());
     }
     return def;
 }
 
-static double json_double(const json& j, const char* key, double def = 0.0) {
-    if (j.contains(key) && j[key].is_number()) {
-        return j[key].get<double>();
+static double json_double(const JsonObj& obj, const char* key, double def = 0.0) {
+    JsonObj::const_iterator it = obj.find(key);
+    if (it != obj.end() && it->second.is<double>()) {
+        return it->second.get<double>();
     }
     return def;
 }
 
-static bool json_bool(const json& j, const char* key, bool def = false) {
-    if (j.contains(key) && j[key].is_boolean()) {
-        return j[key].get<bool>();
+static bool json_bool(const JsonObj& obj, const char* key, bool def = false) {
+    JsonObj::const_iterator it = obj.find(key);
+    if (it != obj.end() && it->second.is<bool>()) {
+        return it->second.get<bool>();
     }
     return def;
+}
+
+/** Check if a key exists in a JSON object. */
+static bool json_has(const JsonObj& obj, const char* key) {
+    return obj.find(key) != obj.end();
+}
+
+/** Get a nested array. Returns empty array if missing. */
+static JsonArr json_arr(const JsonObj& obj, const char* key) {
+    JsonObj::const_iterator it = obj.find(key);
+    if (it != obj.end() && it->second.is<JsonArr>()) {
+        return it->second.get<JsonArr>();
+    }
+    return JsonArr();
 }
 
 // =============================================================================
@@ -145,7 +200,7 @@ struct Client::Impl {
     KeyType key_type;
 
     Impl(const Config& config) {
-        // Resolve API key
+        /* Resolve API key */
         api_key = config.api_key;
         if (api_key.empty()) {
             api_key = env_or("DRIP_API_KEY", "");
@@ -157,22 +212,21 @@ struct Client::Impl {
             );
         }
 
-        // Resolve base URL
+        /* Resolve base URL */
         base_url = config.base_url;
         if (base_url.empty()) {
             base_url = env_or("DRIP_BASE_URL", DEFAULT_BASE_URL);
         }
-        // Strip trailing slash
         while (!base_url.empty() && base_url[base_url.size() - 1] == '/') {
             base_url.erase(base_url.size() - 1);
         }
 
         timeout_ms = config.timeout_ms > 0 ? config.timeout_ms : 30000;
 
-        // Detect key type
-        if (api_key.substr(0, 3) == "sk_") {
+        /* Detect key type */
+        if (api_key.size() >= 3 && api_key.substr(0, 3) == "sk_") {
             key_type = KEY_SECRET;
-        } else if (api_key.substr(0, 3) == "pk_") {
+        } else if (api_key.size() >= 3 && api_key.substr(0, 3) == "pk_") {
             key_type = KEY_PUBLIC;
         } else {
             key_type = KEY_UNKNOWN;
@@ -180,11 +234,9 @@ struct Client::Impl {
     }
 
     /**
-     * Make an HTTP request to the Drip API.
-     * Returns parsed JSON response.
-     * Throws DripError on failure.
+     * Make an HTTP request. Returns parsed JSON object.
      */
-    json request(const std::string& method, const std::string& path, const json& body = json()) {
+    JsonObj request(const std::string& method, const std::string& path, const JsonObj& body) {
         CURL* curl = curl_easy_init();
         if (!curl) {
             throw NetworkError("Failed to initialize CURL");
@@ -194,7 +246,6 @@ struct Client::Impl {
         std::string response_buf;
         long http_code = 0;
 
-        // Headers
         struct curl_slist* headers = NULL;
         headers = curl_slist_append(headers, "Content-Type: application/json");
         std::string auth_header = "Authorization: Bearer " + api_key;
@@ -207,19 +258,17 @@ struct Client::Impl {
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(timeout_ms));
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
-        // Method-specific setup
         std::string body_str;
-        if (method == "POST") {
-            body_str = body.dump();
-            curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        if (method == "POST" || method == "PATCH") {
+            body_str = JsonVal(body).serialize();
+            if (method == "PATCH") {
+                curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
+            } else {
+                curl_easy_setopt(curl, CURLOPT_POST, 1L);
+            }
             curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_str.c_str());
             curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body_str.size()));
-        } else if (method == "PATCH") {
-            body_str = body.dump();
-            curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
-            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_str.c_str());
-            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body_str.size()));
-        } else if (method == "GET") {
+        } else {
             curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
         }
 
@@ -235,26 +284,35 @@ struct Client::Impl {
             throw NetworkError(std::string("CURL error: ") + curl_easy_strerror(res));
         }
 
-        // 204 No Content
+        /* 204 No Content */
         if (http_code == 204) {
-            json result;
-            result["success"] = true;
+            JsonObj result;
+            result["success"] = jbool(true);
             return result;
         }
 
-        // Parse response
-        json data;
-        try {
-            data = json::parse(response_buf);
-        } catch (const json::parse_error& e) {
+        /* Parse response */
+        JsonVal parsed;
+        std::string parse_err = picojson::parse(parsed, response_buf);
+        if (!parse_err.empty()) {
             throw DripError(
-                std::string("Failed to parse API response: ") + e.what(),
+                std::string("Failed to parse API response: ") + parse_err,
                 static_cast<int>(http_code),
                 "PARSE_ERROR"
             );
         }
 
-        // Check for HTTP errors
+        if (!parsed.is<JsonObj>()) {
+            throw DripError(
+                "API response is not a JSON object",
+                static_cast<int>(http_code),
+                "PARSE_ERROR"
+            );
+        }
+
+        JsonObj data = parsed.get<JsonObj>();
+
+        /* Check for HTTP errors */
         if (http_code < 200 || http_code >= 300) {
             std::string msg = json_string(data, "message");
             if (msg.empty()) {
@@ -276,18 +334,20 @@ struct Client::Impl {
         return data;
     }
 
-    /**
-     * Make a GET request with query parameters.
-     */
-    json get(const std::string& path) {
+    /* Overload for GET (no body) */
+    JsonObj request(const std::string& method, const std::string& path) {
+        return request(method, path, JsonObj());
+    }
+
+    JsonObj get(const std::string& path) {
         return request("GET", path);
     }
 
-    json post(const std::string& path, const json& body) {
+    JsonObj post(const std::string& path, const JsonObj& body) {
         return request("POST", path, body);
     }
 
-    json patch(const std::string& path, const json& body) {
+    JsonObj patch(const std::string& path, const JsonObj& body) {
         return request("PATCH", path, body);
     }
 };
@@ -300,15 +360,8 @@ Client::Client(const Config& config)
     : impl_(new Impl(config))
 {}
 
-Client::~Client() = default;
-
-Client::Client(Client&& other)
-    : impl_(std::move(other.impl_))
-{}
-
-Client& Client::operator=(Client&& other) {
-    impl_ = std::move(other.impl_);
-    return *this;
+Client::~Client() {
+    delete impl_;
 }
 
 KeyType Client::key_type() const {
@@ -319,15 +372,18 @@ KeyType Client::key_type() const {
 // createCustomer()
 // =============================================================================
 
-static CustomerResult parse_customer(const json& data) {
+static CustomerResult parse_customer(const JsonObj& data) {
     CustomerResult r;
     r.id = json_string(data, "id");
     r.external_customer_id = json_string(data, "externalCustomerId");
     r.onchain_address = json_string(data, "onchainAddress");
     r.status = json_string(data, "status");
     r.is_internal = json_bool(data, "isInternal", false);
-    if (data.contains("metadata") && data["metadata"].is_object()) {
-        r.metadata = metadata_from_json(data["metadata"]);
+    if (json_has(data, "metadata")) {
+        JsonObj::const_iterator it = data.find("metadata");
+        if (it != data.end()) {
+            r.metadata = metadata_from_json(it->second);
+        }
     }
     r.created_at = json_string(data, "createdAt");
     r.updated_at = json_string(data, "updatedAt");
@@ -335,9 +391,9 @@ static CustomerResult parse_customer(const json& data) {
 }
 
 CustomerResult Client::createCustomer(const CreateCustomerParams& params) {
-    json body;
-    if (!params.external_customer_id.empty()) body["externalCustomerId"] = params.external_customer_id;
-    if (!params.onchain_address.empty()) body["onchainAddress"] = params.onchain_address;
+    JsonObj body;
+    if (!params.external_customer_id.empty()) body["externalCustomerId"] = jstr(params.external_customer_id);
+    if (!params.onchain_address.empty()) body["onchainAddress"] = jstr(params.onchain_address);
     if (!params.metadata.empty()) body["metadata"] = metadata_to_json(params.metadata);
 
     return parse_customer(impl_->post("/customers", body));
@@ -360,14 +416,15 @@ ListCustomersResult Client::listCustomers(const ListCustomersOptions& options) {
     path << "/customers?limit=" << options.limit;
     if (!options.status.empty()) path << "&status=" << options.status;
 
-    json data = impl_->get(path.str());
+    JsonObj data = impl_->get(path.str());
 
     ListCustomersResult result;
     result.total = json_int(data, "count", 0);
 
-    if (data.contains("data") && data["data"].is_array()) {
-        for (size_t i = 0; i < data["data"].size(); ++i) {
-            result.customers.push_back(parse_customer(data["data"][i]));
+    JsonArr arr = json_arr(data, "data");
+    for (size_t i = 0; i < arr.size(); ++i) {
+        if (arr[i].is<JsonObj>()) {
+            result.customers.push_back(parse_customer(arr[i].get<JsonObj>()));
         }
     }
     return result;
@@ -378,7 +435,7 @@ ListCustomersResult Client::listCustomers(const ListCustomersOptions& options) {
 // =============================================================================
 
 BalanceResult Client::getBalance(const std::string& customer_id) {
-    json data = impl_->get("/customers/" + customer_id + "/balance");
+    JsonObj data = impl_->get("/customers/" + customer_id + "/balance");
 
     BalanceResult r;
     r.customer_id = json_string(data, "customerId");
@@ -391,30 +448,25 @@ BalanceResult Client::getBalance(const std::string& customer_id) {
 // =============================================================================
 
 PingResult Client::ping() {
-    // Health endpoint is at the root, not under /v1
     std::string health_url = impl_->base_url;
 
-    // Strip /v1 suffix if present
     std::string suffix = "/v1";
     if (health_url.size() >= suffix.size() &&
         health_url.compare(health_url.size() - suffix.size(), suffix.size(), suffix) == 0) {
         health_url.erase(health_url.size() - suffix.size());
     }
 
-    auto start = std::chrono::steady_clock::now();
+    long long start = now_ms();
 
-    // Temporarily override base_url for this request
     std::string saved_base = impl_->base_url;
     impl_->base_url = health_url;
 
     PingResult result;
     try {
-        json data = impl_->get("/health");
-        auto end = std::chrono::steady_clock::now();
+        JsonObj data = impl_->get("/health");
+        long long end = now_ms();
 
-        result.latency_ms = static_cast<int>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count()
-        );
+        result.latency_ms = static_cast<int>(end - start);
         result.status = json_string(data, "status");
         if (result.status.empty()) result.status = "healthy";
         result.ok = (result.status == "healthy");
@@ -440,17 +492,17 @@ TrackUsageResult Client::trackUsage(const TrackUsageParams& params) {
         idem_key = make_idempotency_key("track", params.customer_id, params.meter, params.quantity);
     }
 
-    json body;
-    body["customerId"] = params.customer_id;
-    body["usageType"] = params.meter;
-    body["quantity"] = params.quantity;
-    body["idempotencyKey"] = idem_key;
+    JsonObj body;
+    body["customerId"] = jstr(params.customer_id);
+    body["usageType"] = jstr(params.meter);
+    body["quantity"] = jnum(params.quantity);
+    body["idempotencyKey"] = jstr(idem_key);
 
-    if (!params.units.empty()) body["units"] = params.units;
-    if (!params.description.empty()) body["description"] = params.description;
+    if (!params.units.empty()) body["units"] = jstr(params.units);
+    if (!params.description.empty()) body["description"] = jstr(params.description);
     if (!params.metadata.empty()) body["metadata"] = metadata_to_json(params.metadata);
 
-    json data = impl_->post("/usage/internal", body);
+    JsonObj data = impl_->post("/usage/internal", body);
 
     TrackUsageResult r;
     r.success = json_bool(data, "success", true);
@@ -468,16 +520,16 @@ TrackUsageResult Client::trackUsage(const TrackUsageParams& params) {
 // =============================================================================
 
 RunResult Client::startRun(const StartRunParams& params) {
-    json body;
-    body["customerId"] = params.customer_id;
-    body["workflowId"] = params.workflow_id;
+    JsonObj body;
+    body["customerId"] = jstr(params.customer_id);
+    body["workflowId"] = jstr(params.workflow_id);
 
-    if (!params.external_run_id.empty()) body["externalRunId"] = params.external_run_id;
-    if (!params.correlation_id.empty()) body["correlationId"] = params.correlation_id;
-    if (!params.parent_run_id.empty()) body["parentRunId"] = params.parent_run_id;
+    if (!params.external_run_id.empty()) body["externalRunId"] = jstr(params.external_run_id);
+    if (!params.correlation_id.empty()) body["correlationId"] = jstr(params.correlation_id);
+    if (!params.parent_run_id.empty()) body["parentRunId"] = jstr(params.parent_run_id);
     if (!params.metadata.empty()) body["metadata"] = metadata_to_json(params.metadata);
 
-    json data = impl_->post("/runs", body);
+    JsonObj data = impl_->post("/runs", body);
 
     RunResult r;
     r.id = json_string(data, "id");
@@ -491,14 +543,14 @@ RunResult Client::startRun(const StartRunParams& params) {
 }
 
 EndRunResult Client::endRun(const std::string& run_id, const EndRunParams& params) {
-    json body;
-    body["status"] = run_status_to_string(params.status);
+    JsonObj body;
+    body["status"] = jstr(run_status_to_string(params.status));
 
-    if (!params.error_message.empty()) body["errorMessage"] = params.error_message;
-    if (!params.error_code.empty()) body["errorCode"] = params.error_code;
+    if (!params.error_message.empty()) body["errorMessage"] = jstr(params.error_message);
+    if (!params.error_code.empty()) body["errorCode"] = jstr(params.error_code);
     if (!params.metadata.empty()) body["metadata"] = metadata_to_json(params.metadata);
 
-    json data = impl_->patch("/runs/" + run_id, body);
+    JsonObj data = impl_->patch("/runs/" + run_id, body);
 
     EndRunResult r;
     r.id = json_string(data, "id");
@@ -516,18 +568,18 @@ EventResult Client::emitEvent(const EmitEventParams& params) {
         idem_key = make_idempotency_key("evt", params.run_id, params.event_type, params.quantity);
     }
 
-    json body;
-    body["runId"] = params.run_id;
-    body["eventType"] = params.event_type;
-    body["idempotencyKey"] = idem_key;
+    JsonObj body;
+    body["runId"] = jstr(params.run_id);
+    body["eventType"] = jstr(params.event_type);
+    body["idempotencyKey"] = jstr(idem_key);
 
-    if (params.quantity != 0) body["quantity"] = params.quantity;
-    if (!params.units.empty()) body["units"] = params.units;
-    if (!params.description.empty()) body["description"] = params.description;
-    if (params.cost_units != 0) body["costUnits"] = params.cost_units;
+    if (params.quantity != 0) body["quantity"] = jnum(params.quantity);
+    if (!params.units.empty()) body["units"] = jstr(params.units);
+    if (!params.description.empty()) body["description"] = jstr(params.description);
+    if (params.cost_units != 0) body["costUnits"] = jnum(params.cost_units);
     if (!params.metadata.empty()) body["metadata"] = metadata_to_json(params.metadata);
 
-    json data = impl_->post("/run-events", body);
+    JsonObj data = impl_->post("/run-events", body);
 
     EventResult r;
     r.id = json_string(data, "id");
@@ -545,41 +597,38 @@ EventResult Client::emitEvent(const EmitEventParams& params) {
 // =============================================================================
 
 RecordRunResult Client::recordRun(const RecordRunParams& params) {
-    auto start = std::chrono::steady_clock::now();
+    long long start_time = now_ms();
 
-    // Step 1: Resolve workflow (find or create)
+    /* Step 1: Resolve workflow (find or create) */
     std::string workflow_id = params.workflow;
     std::string workflow_name = params.workflow;
 
     if (params.workflow.substr(0, 3) != "wf_") {
         try {
-            json workflows = impl_->get("/workflows");
+            JsonObj workflows = impl_->get("/workflows");
             bool found = false;
 
-            if (workflows.contains("data") && workflows["data"].is_array()) {
-                for (size_t i = 0; i < workflows["data"].size(); ++i) {
-                    const json& w = workflows["data"][i];
-                    std::string slug = json_string(w, "slug");
-                    std::string id = json_string(w, "id");
-                    if (slug == params.workflow || id == params.workflow) {
-                        workflow_id = id;
-                        workflow_name = json_string(w, "name");
-                        found = true;
-                        break;
-                    }
+            JsonArr arr = json_arr(workflows, "data");
+            for (size_t i = 0; i < arr.size(); ++i) {
+                if (!arr[i].is<JsonObj>()) continue;
+                JsonObj w = arr[i].get<JsonObj>();
+                std::string slug = json_string(w, "slug");
+                std::string id = json_string(w, "id");
+                if (slug == params.workflow || id == params.workflow) {
+                    workflow_id = id;
+                    workflow_name = json_string(w, "name");
+                    found = true;
+                    break;
                 }
             }
 
             if (!found) {
-                // Create workflow
-                // Capitalize the slug for display name
                 std::string display_name = params.workflow;
                 for (size_t i = 0; i < display_name.size(); ++i) {
                     if (display_name[i] == '_' || display_name[i] == '-') {
                         display_name[i] = ' ';
                     }
                 }
-                // Capitalize first letter of each word
                 bool cap_next = true;
                 for (size_t i = 0; i < display_name.size(); ++i) {
                     if (cap_next && display_name[i] >= 'a' && display_name[i] <= 'z') {
@@ -588,22 +637,21 @@ RecordRunResult Client::recordRun(const RecordRunParams& params) {
                     cap_next = (display_name[i] == ' ');
                 }
 
-                json create_body;
-                create_body["name"] = display_name;
-                create_body["slug"] = params.workflow;
-                create_body["productSurface"] = "CUSTOM";
+                JsonObj create_body;
+                create_body["name"] = jstr(display_name);
+                create_body["slug"] = jstr(params.workflow);
+                create_body["productSurface"] = jstr("CUSTOM");
 
-                json created = impl_->post("/workflows", create_body);
+                JsonObj created = impl_->post("/workflows", create_body);
                 workflow_id = json_string(created, "id");
                 workflow_name = json_string(created, "name");
             }
         } catch (...) {
-            // Fall back to using the slug directly
             workflow_id = params.workflow;
         }
     }
 
-    // Step 2: Create the run
+    /* Step 2: Create the run */
     StartRunParams run_params;
     run_params.customer_id = params.customer_id;
     run_params.workflow_id = workflow_id;
@@ -613,46 +661,46 @@ RecordRunResult Client::recordRun(const RecordRunParams& params) {
 
     RunResult run = startRun(run_params);
 
-    // Step 3: Emit events in batch
+    /* Step 3: Emit events in batch */
     int events_created = 0;
     int events_duplicates = 0;
 
     if (!params.events.empty()) {
-        json batch_events = json::array();
+        JsonArr batch_events;
         for (size_t i = 0; i < params.events.size(); ++i) {
             const RecordRunEvent& evt = params.events[i];
-            json event_json;
-            event_json["runId"] = run.id;
-            event_json["eventType"] = evt.event_type;
+            JsonObj event_json;
+            event_json["runId"] = jstr(run.id);
+            event_json["eventType"] = jstr(evt.event_type);
 
-            if (evt.quantity != 0) event_json["quantity"] = evt.quantity;
-            if (!evt.units.empty()) event_json["units"] = evt.units;
-            if (!evt.description.empty()) event_json["description"] = evt.description;
-            if (evt.cost_units != 0) event_json["costUnits"] = evt.cost_units;
+            if (evt.quantity != 0) event_json["quantity"] = jnum(evt.quantity);
+            if (!evt.units.empty()) event_json["units"] = jstr(evt.units);
+            if (!evt.description.empty()) event_json["description"] = jstr(evt.description);
+            if (evt.cost_units != 0) event_json["costUnits"] = jnum(evt.cost_units);
             if (!evt.metadata.empty()) event_json["metadata"] = metadata_to_json(evt.metadata);
 
             if (!params.external_run_id.empty()) {
                 std::ostringstream key;
                 key << params.external_run_id << ":" << evt.event_type << ":" << i;
-                event_json["idempotencyKey"] = key.str();
+                event_json["idempotencyKey"] = jstr(key.str());
             } else {
-                event_json["idempotencyKey"] = make_idempotency_key_int(
+                event_json["idempotencyKey"] = jstr(make_idempotency_key_int(
                     "run", run.id, evt.event_type, static_cast<int>(i)
-                );
+                ));
             }
 
-            batch_events.push_back(event_json);
+            batch_events.push_back(JsonVal(event_json));
         }
 
-        json batch_body;
-        batch_body["events"] = batch_events;
+        JsonObj batch_body;
+        batch_body["events"] = JsonVal(batch_events);
 
-        json batch_result = impl_->post("/run-events/batch", batch_body);
+        JsonObj batch_result = impl_->post("/run-events/batch", batch_body);
         events_created = json_int(batch_result, "created", 0);
         events_duplicates = json_int(batch_result, "duplicates", 0);
     }
 
-    // Step 4: End the run
+    /* Step 4: End the run */
     EndRunParams end_params;
     end_params.status = params.status;
     end_params.error_message = params.error_message;
@@ -660,12 +708,9 @@ RecordRunResult Client::recordRun(const RecordRunParams& params) {
 
     EndRunResult end_result = endRun(run.id, end_params);
 
-    auto end = std::chrono::steady_clock::now();
-    int total_ms = static_cast<int>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count()
-    );
+    long long end_time = now_ms();
+    int total_ms = static_cast<int>(end_time - start_time);
 
-    // Build summary
     int display_ms = (end_result.duration_ms > 0) ? end_result.duration_ms : total_ms;
     std::string status_icon;
     if (params.status == RUN_COMPLETED) status_icon = "[OK]";
@@ -690,4 +735,4 @@ RecordRunResult Client::recordRun(const RecordRunParams& params) {
     return result;
 }
 
-} // namespace drip
+} /* namespace drip */

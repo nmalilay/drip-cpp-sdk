@@ -1,8 +1,7 @@
 /**
- * Drip C++ SDK - Basic compilation and unit tests.
+ * Drip C++ SDK (C++03) - Unit tests.
  *
  * Tests type construction and serialization without requiring a live API.
- * For integration tests against a running backend, set DRIP_API_KEY.
  */
 
 #include <drip/drip.hpp>
@@ -44,6 +43,7 @@ void test_config_defaults() {
 void test_track_usage_params() {
     TEST(track_usage_params) {
         drip::TrackUsageParams params;
+        assert(params.quantity == 0);  /* C++03 version initializes this */
         params.customer_id = "cust_123";
         params.meter = "tokens";
         params.quantity = 1500;
@@ -136,7 +136,6 @@ void test_error_types() {
 
 void test_client_requires_api_key() {
     TEST(client_requires_api_key) {
-        // Unset env var for this test
         bool threw = false;
         try {
             drip::Config cfg;
@@ -178,13 +177,55 @@ void test_version_defined() {
     }
 }
 
+void test_all_structs_initialized() {
+    TEST(all_structs_initialized) {
+        /* Verify all structs have proper zero-initialization in C++03 */
+        drip::PingResult ping;
+        assert(ping.ok == false);
+        assert(ping.latency_ms == 0);
+        assert(ping.timestamp == 0);
+
+        drip::TrackUsageResult usage;
+        assert(usage.success == false);
+        assert(usage.quantity == 0);
+        assert(usage.is_internal == false);
+
+        drip::CustomerResult cust;
+        assert(cust.is_internal == false);
+
+        drip::ListCustomersResult list;
+        assert(list.total == 0);
+
+        drip::RunResult run;
+        assert(run.status == drip::RUN_PENDING);
+
+        drip::EndRunResult end;
+        assert(end.duration_ms == 0);
+        assert(end.event_count == 0);
+
+        drip::EventResult evt;
+        assert(evt.quantity == 0);
+        assert(evt.cost_units == 0);
+        assert(evt.is_duplicate == false);
+
+        drip::RecordRunResult rec;
+        assert(rec.run.duration_ms == 0);
+        assert(rec.events.created == 0);
+        assert(rec.events.duplicates == 0);
+
+        PASS();
+    } catch (const std::exception& e) {
+        FAIL(e.what());
+    }
+}
+
 // =============================================================================
 // Main
 // =============================================================================
 
 int main() {
-    std::cout << "Drip C++ SDK Tests" << std::endl;
-    std::cout << "==================" << std::endl;
+    std::cout << "Drip C++ SDK (C++03) Tests" << std::endl;
+    std::cout << "==========================" << std::endl;
 
     test_config_defaults();
     test_track_usage_params();
@@ -194,6 +235,7 @@ int main() {
     test_client_requires_api_key();
     test_emit_event_defaults();
     test_version_defined();
+    test_all_structs_initialized();
 
     std::cout << std::endl;
     std::cout << "Results: " << tests_passed << " passed, "
