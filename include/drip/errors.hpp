@@ -17,6 +17,9 @@ public:
         , code_(code)
     {}
 
+    /* C++03: must match base class throw() spec */
+    ~DripError() throw() {}
+
     /** HTTP status code (0 for network/local errors). */
     int status_code() const { return status_code_; }
 

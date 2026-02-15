@@ -1,13 +1,12 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.0)
 
-project(drip-sdk-cpp
+project(drip-sdk-cpp03
     VERSION 0.1.0
-    DESCRIPTION "Official C++ SDK for Drip - usage-based billing infrastructure"
     LANGUAGES CXX
 )
 
-set(CMAKE_CXX_STANDARD 11)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# C++03 — the whole point of this SDK variant
+set(CMAKE_CXX_STANDARD 98)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Options
@@ -24,7 +23,6 @@ find_package(CURL REQUIRED)
 
 # nlohmann/json - header-only JSON library
 if(DRIP_VENDORED_JSON)
-    # Use a local copy at third_party/nlohmann/json.hpp
     add_library(nlohmann_json INTERFACE)
     target_include_directories(nlohmann_json INTERFACE
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party
@@ -44,26 +42,26 @@ endif()
 # Library
 # =============================================================================
 
-add_library(drip_sdk
+add_library(drip_sdk03
     src/client.cpp
 )
 
-add_library(drip::sdk ALIAS drip_sdk)
+add_library(drip::sdk03 ALIAS drip_sdk03)
 
-target_include_directories(drip_sdk
+target_include_directories(drip_sdk03
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(drip_sdk
+target_link_libraries(drip_sdk03
     PRIVATE
         nlohmann_json::nlohmann_json
         CURL::libcurl
 )
 
-set_target_properties(drip_sdk PROPERTIES
-    OUTPUT_NAME "drip"
+set_target_properties(drip_sdk03 PROPERTIES
+    OUTPUT_NAME "drip03"
     VERSION ${PROJECT_VERSION}
     SOVERSION 0
 )
@@ -73,8 +71,8 @@ set_target_properties(drip_sdk PROPERTIES
 # =============================================================================
 
 if(DRIP_BUILD_EXAMPLES)
-    add_executable(drip_basic_example examples/basic_usage.cpp)
-    target_link_libraries(drip_basic_example PRIVATE drip_sdk)
+    add_executable(drip03_demo examples/demo.cpp)
+    target_link_libraries(drip03_demo PRIVATE drip_sdk03)
 endif()
 
 # =============================================================================
@@ -83,19 +81,19 @@ endif()
 
 if(DRIP_BUILD_TESTS)
     enable_testing()
-    add_executable(drip_tests tests/test_client.cpp)
-    target_link_libraries(drip_tests PRIVATE drip_sdk)
-    add_test(NAME drip_sdk_tests COMMAND drip_tests)
+    add_executable(drip03_tests tests/test_client.cpp)
+    target_link_libraries(drip03_tests PRIVATE drip_sdk03)
+    add_test(NAME drip03_sdk_tests COMMAND drip03_tests)
 endif()
 
 # =============================================================================
-# Install (only when built standalone, not as a subdirectory)
+# Install
 # =============================================================================
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     include(GNUInstallDirs)
 
-    install(TARGETS drip_sdk
+    install(TARGETS drip_sdk03
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -105,21 +103,3 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
     )
 endif()
-
-# =============================================================================
-# Makefile generation helper (for non-CMake projects like glades-ml)
-# =============================================================================
-#
-# If your project uses raw Makefiles instead of CMake, you can:
-#
-# 1. Build this SDK as a static/shared library:
-#    mkdir build && cd build
-#    cmake .. -DCMAKE_BUILD_TYPE=Release
-#    make
-#
-# 2. Then link against it in your Makefile:
-#    CXXFLAGS += -I/path/to/sdk-cpp/include
-#    LDFLAGS  += -L/path/to/sdk-cpp/build -ldrip -lcurl
-#
-# Or use the provided Makefile wrapper (see Makefile in this directory).
-# =============================================================================

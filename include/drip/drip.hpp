@@ -2,7 +2,8 @@
 #define DRIP_HPP
 
 /**
- * Drip C++ SDK - Official client library for Drip billing infrastructure.
+ * Drip C++ SDK (C++03 Compatible) - Official client library for Drip billing
+ * infrastructure.
  *
  * Include this single header to get the full SDK:
  *
@@ -14,12 +15,12 @@
  *       drip::Client client(cfg);
  *
  *       // Health check
- *       auto health = client.ping();
+ *       drip::PingResult health = client.ping();
  *
  *       // Create a customer first
  *       drip::CreateCustomerParams cparams;
  *       cparams.external_customer_id = "user_123";
- *       auto customer = client.createCustomer(cparams);
+ *       drip::CustomerResult customer = client.createCustomer(cparams);
  *
  *       // Track usage (no billing)
  *       drip::TrackUsageParams usage;
@@ -40,14 +41,14 @@
  *       epoch.units = "epochs";
  *       run.events.push_back(epoch);
  *
- *       auto result = client.recordRun(run);
+ *       drip::RecordRunResult result = client.recordRun(run);
  *   }
  *
  * Dependencies:
  *   - libcurl (linked at build time)
  *   - nlohmann/json (header-only, fetched automatically by CMake/Make)
  *
- * Minimum C++ standard: C++11
+ * Minimum C++ standard: C++03
  */
 
 #include "types.hpp"
@@ -62,4 +63,4 @@
 #define DRIP_SDK_VERSION_PATCH 0
 #define DRIP_SDK_VERSION "0.1.0"
 
-#endif // DRIP_HPP
+#endif /* DRIP_HPP */
